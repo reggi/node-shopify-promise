@@ -19,7 +19,7 @@ function Shopify(options) {
   // http://docs.shopify.com/api/introduction/api-call-limit
   // 1000 / 40, 500, 20
   this.request = promiseDebounce(this.req, 1000, 2)
-  debug("shop %s", key.shop);
+  debug("shop %s", this.shop);
 }
 
 Shopify.prototype.mockRequest = function(options) {
