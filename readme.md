@@ -9,6 +9,12 @@ I wanted a Shopify wrapper that used promises.
  * Bluebird promises
  * Rate limit handling
 
+## Test
+
+```
+SHOP={shop}.myshopify.com PASS={pass} node test
+```
+
 ## Install
 
 ```
