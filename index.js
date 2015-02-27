@@ -324,3 +324,70 @@ Shopify.prototype.ensureRedirects = function(redirects){
     }.bind(this))
   }.bind(this))
 }
+
+/* -----PRODUCTS----- */
+
+Shopify.prototype.retrieveProducts = function(page){
+  if(!page) page = 1;
+  return this.request({
+    "path": "/admin/products.json",
+    "qs": {
+      "limit": 250,
+      "page": page
+    }
+  }).then(function(response){
+    return response.products
+  });
+}
+
+Shopify.prototype.retrieveProductsCount = function(){
+  return this.request({
+    "path": "/admin/products/count.json"
+  }).then(function(response){
+    return response.count;
+  })
+}
+
+Shopify.prototype.retrieveAllProducts = function(){
+  return this.retrieveProductsCount().then(function(count){
+    var pages = Math.ceil(count / 250)
+    var range = _.range(1, pages+1)
+    return range
+  }).map(function(page){
+    return this.retrieveProducts(page)
+  }.bind(this)).then(_).call("flatten")
+}
+
+
+/* -----PAGES----- */
+
+Shopify.prototype.retrievePages = function(page){
+  if(!page) page = 1;
+  return this.request({
+    "path": "/admin/pages.json",
+    "qs": {
+      "limit": 250,
+      "page": page
+    }
+  }).then(function(response){
+    return response.pages
+  });
+}
+
+Shopify.prototype.retrievePagesCount = function(){
+  return this.request({
+    "path": "/admin/pages/count.json"
+  }).then(function(response){
+    return response.count;
+  })
+}
+
+Shopify.prototype.retrieveAllPages = function(){
+  return this.retrievePagesCount().then(function(count){
+    var pages = Math.ceil(count / 250)
+    var range = _.range(1, pages+1)
+    return range
+  }).map(function(page){
+    return this.retrievePages(page)
+  }.bind(this)).then(_).call("flatten")
+}
