@@ -9,6 +9,12 @@ I wanted a Shopify wrapper that used promises.
  * Bluebird promises
  * Rate limit handling
 
+## Install
+
+```
+npm install shopify-promise --save
+```
+
 ## Usage
 
 ```
