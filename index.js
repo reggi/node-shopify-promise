@@ -1,3 +1,4 @@
+var path = require("path")
 var dotty = require("dotty");
 var Promise = require("bluebird");
 var debug = require("debug")("shopify");
@@ -10,15 +11,16 @@ var promiseDebounce = require("./promise-debounce")
 module.exports = Shopify;
 
 function Shopify(options) {
-  this.debug = (options.debug) ? options.debug : false;
+  this.debug = options.debug || false;
   this.shop = options.shop
   this.password = options.password
   this.cache = {}
+  this.requestsPerSecond = options.requestsPerSecond || 2
   this.req = (this.debug) ? this.mockRequest : this.makeRequest;
   // allows for 40 request a second
   // http://docs.shopify.com/api/introduction/api-call-limit
   // 1000 / 40, 500, 20
-  this.request = promiseDebounce(this.req, 1000, 2)
+  this.request = promiseDebounce(this.req, 1000, this.requestsPerSecond)
   debug("shop %s", this.shop);
 }
 
@@ -41,88 +43,75 @@ Shopify.prototype.makeRequest = function(options) {
   return request(options);
 }
 
-/* -----BLOGS----- */
-
-Shopify.prototype.retrieveBlogs = function() {
-  return this.request({
-    "path": "/admin/blogs.json",
-  });
+function retrieveAllRange(count){
+  var pages = Math.ceil(count / 250)
+  var range = _.range(1, pages+1)
+  return range
 }
 
-Shopify.prototype.findBlog = function(match) {
-  return this.retrieveBlogs().then(function(response) {
-    return response.blogs;
-  }).then(_).call("findWhere", match).then(function(blog) {
-    return {
-      "blog": blog
-    }
-  });
+function instantiateAsset(schema){
+  var asset = {}
+  asset.schema = schema
+  asset.parent = _.first(schema)
+  if(asset.schema.length !== 1) asset.child = _.last(schema)
+  asset.alias = _.last(asset.schema)
+  if(asset.child && asset.child.lowercaseSingular == "metafield"){
+    asset.alias["uppercasePlural"] = asset.parent.uppercaseSingular + "Metafields"
+    asset.alias["uppercaseSingular"] = asset.parent.uppercaseSingular + "Metafield"
+  }
+  return asset;
 }
 
-Shopify.prototype.createBlog = function(blogContent) {
-  return this.request({
-    "method": "POST",
-    "path": "/admin/blogs.json",
-    "body": {
-      "blog": blogContent
-    }
-  });
+function assembleUrl(asset, parentId, childId){
+  var theUrl = []
+  theUrl.push("admin")
+  theUrl.push(asset.parent.lowercasePlural)
+  if(parentId){
+    parentId = parentId.toString()
+    theUrl.push(parentId)
+  }
+  if(asset.child){
+    theUrl.push(asset.child.lowercasePlural)
+  }
+  if(childId){
+    childId = childId.toString()
+    theUrl.push(childId)
+  }
+  theUrl = path.join.apply(false, theUrl)
+  theUrl = "/"+theUrl
+  return theUrl
 }
 
-Shopify.prototype.deleteBlog = function(blogId) {
-  return this.request({
-    "method": "DELETE",
-    "path": "/admin/blogs/" + blogId + ".json",
-  });
+
+function indexByMultiple(collection, indexByArray, delimeter){
+  if(!delimeter) delimeter = " "
+  var arrObject = _.map(collection, function(item){
+    var ids = _.map(indexByArray, function(value){
+      return item[value]
+    })
+    var temp = {}
+    temp[ids.join(delimeter)] = item
+    return temp
+  })
+  return _.extend.apply(null, [{}].concat(arrObject));
 }
 
-Shopify.prototype.ensureBlog = function(match, blogContent) {
-  if (typeof blogContent == "undefined") blogContent = match;
-  return this.findBlog(match).then(function(response) {
-    if (response.blog) return response;
-    return this.createBlog(blogContent).then(function(response) {
-      return response;
-    });
-  }.bind(this));
+function indexByMetafield(collection){
+  return indexByMultiple(collection, ["namespace", "key"], ".")
 }
 
-/* -----ARTICLES----- */
-
-Shopify.prototype.retrieveArticles = function(blogId) {
-  return this.request({
-    "path": "/admin/blogs/" + blogId + "/articles.json",
-  });
+function getMetafieldsToCreate(serverContent, articleContent) {
+  var serverMetafields = indexByMetafield(serverContent.metafields)
+  var localMetafields = indexByMetafield(articleContent.metafields)
+  return _.chain(localMetafields).map(function(localMetafield, key) {
+    if (!serverMetafields[key]) return localMetafield;
+    return false;
+  }).compact().value();
 }
 
-Shopify.prototype.retrieveArticle = function(blogId, articleId) {
-  return this.request({
-    "path": "/admin/blogs/" + blogId + "/articles/" + articleId + ".json"
-  });
-}
-
-Shopify.prototype.findArticle = function(articlesResponse, match) {
-  return Promise.resolve(articlesResponse).then(function(response) {
-    return response.articles;
-  }).then(_).call("findWhere", match).then(function(article) {
-    return {
-      "article": article
-    }
-  });
-}
-
-Shopify.prototype.createArticle = function(blogId, articleContent) {
-  return this.request({
-    "method": "POST",
-    "path": "/admin/blogs/" + blogId + "/articles.json",
-    "body": {
-      "article": articleContent
-    }
-  });
-}
-
-Shopify.prototype.getMetafieldsToUpdate = function(serverContent, articleContent) {
-  var serverMetafields = _.indexBy(serverContent.metafields, "key");
-  var localMetafields = _.indexBy(articleContent.metafields, "key");
+function getMetafieldsToUpdate(serverContent, articleContent) {
+  var serverMetafields = indexByMetafield(serverContent.metafields)
+  var localMetafields = indexByMetafield(articleContent.metafields)
   return _.chain(localMetafields).map(function(localMetafield, key) {
     if (!serverMetafields[key]) return false;
     var serverMetafield = serverMetafields[key];
@@ -133,261 +122,448 @@ Shopify.prototype.getMetafieldsToUpdate = function(serverContent, articleContent
   }).compact().value();
 }
 
-Shopify.prototype.getMetafieldsToDelete = function(serverContent, articleContent) {
-  var serverMetafields = _.indexBy(serverContent.metafields, "key");
-  var localMetafields = _.indexBy(articleContent.metafields, "key");
+function getMetafieldsToDelete(serverContent, articleContent) {
+  var serverMetafields = indexByMetafield(serverContent.metafields)
+  var localMetafields = indexByMetafield(articleContent.metafields)
   return _.chain(serverMetafields).map(function(serverMetafield, key) {
     if (!localMetafields[key]) return serverMetafield;
     return false;
   }).compact().value();
 }
 
-Shopify.prototype.getMetafieldsToCreate = function(serverContent, articleContent) {
-  var serverMetafields = _.indexBy(serverContent.metafields, "key");
-  var localMetafields = _.indexBy(articleContent.metafields, "key");
-  return _.chain(localMetafields).map(function(localMetafield, key) {
-    if (!serverMetafields[key]) return localMetafield;
-    return false;
-  }).compact().value();
-}
+/* -----skeleton----- */
 
-Shopify.prototype.updateArticleAndMetafields = function(blogId, articleId, articleContent) {
-  return this.retrieveTypeMetafields("articles", articleId).then(function(response) {
-    var metafieldsToCreate = this.getMetafieldsToCreate(response, articleContent);
-    var metafieldsToUpdate = this.getMetafieldsToUpdate(response, articleContent);
-    var metafieldsToDelete = this.getMetafieldsToDelete(response, articleContent);
-    //debug(metafieldsToCreate);
-    //debug(metafieldsToUpdate);
-    //debug(metafieldsToDelete);
-    articleContent.metafields = metafieldsToCreate;
-    return this.updateArticle(blogId, articleId, articleContent)
-      .then(function() {
-        return this.deleteTypeMetafields("articles", articleId, metafieldsToDelete);
-      }.bind(this))
-      .then(function() {
-        return this.updateTypeMetafields("articles", articleId, metafieldsToUpdate);
-      }.bind(this))
-  }.bind(this));
-}
-
-Shopify.prototype.updateArticle = function(blogId, articleId, articleContent) {
-  return this.request({
-    "method": "PUT",
-    "path": "/admin/blogs/" + blogId + "/articles/" + articleId + ".json",
-    "body": {
-      "article": articleContent
-    }
-  });
-}
-
-Shopify.prototype.deleteArticle = function(blogId, articleId) {
-  return this.request({
-    "method": "DELETE",
-    "path": "/admin/blogs/" + blogId + "/articles/" + articleId + ".json",
-  });
-}
-
-Shopify.prototype.ensureArticle = function(articlesResponse, blogId, match, articleContent) {
-  return this.findArticle(articlesResponse, match).then(function(response) {
-    if (dotty.exists(response, "article.id")) {
-      var articleId = response.article.id;
-      return this.updateArticleAndMetafields(blogId, articleId, articleContent)
-        .then(function(response) {
-          return response;
-        });
-    } else {
-      return this.createArticle(blogId, articleContent).then(function(response) {
-        return response;
-      });
-    }
-  }.bind(this));
-}
-
-Shopify.prototype.ensureArticles = function(articlesResponse, blogId, match, articles) {
-  return Promise.each(articles, function(article) {
-    var _match = (typeof match == "function") ? match(article) : match;
-    return this.ensureArticle(articlesResponse, blogId, _match, article);
-  }.bind(this));
-}
-
-/* -----METAFIELDS----- */
-
-Shopify.prototype.retrieveTypeMetafields = function(type, typeId) {
-  return this.request({
-    "path": "/admin/" + type + "/" + typeId + "/metafields.json"
-  });
-}
-
-Shopify.prototype.updateTypeMetafield = function(type, typeId, metafieldsId, metafieldContent) {
-  return this.request({
-    "method": "PUT",
-    "path": "/admin/" + type + "/" + typeId + "/metafields/" + metafieldsId + ".json",
-    "body": {
-      "metafield": metafieldContent
-    }
-  });
-}
-
-Shopify.prototype.createTypeMetafield = function(type, typeId, metafieldContent) {
-  return this.request({
-    "method": "POST",
-    "path": "/admin/" + type + "/" + typeId + "/metafields.json",
-    "body": {
-      "metafield": metafieldContent
-    }
-  });
-}
-
-Shopify.prototype.deleteTypeMetafield = function(type, typeId, metafieldsId) {
-  return this.request({
-    "method": "DELETE",
-    "path": "/admin/" + type + "/" + typeId + "/metafields/" + metafieldsId + ".json",
-  });
-}
-
-Shopify.prototype.updateTypeMetafields = function(type, typeId, metafields) {
-  return Promise.each(metafields, function(metafield) {
-    return this.updateTypeMetafield(type, typeId, metafield.id, metafield);
-  }.bind(this));
-}
-
-Shopify.prototype.deleteTypeMetafields = function(type, typeId, metafields) {
-  return Promise.each(metafields, function(metafield) {
-    return this.deleteTypeMetafield(type, typeId, metafield.id);
-  }.bind(this));
-}
-
-/* -----REDIRECTS----- */
-
-Shopify.prototype.retrieveRedirects = function(page){
+Shopify.prototype.retrievePlural = function(asset, page, parentId) {
   if(!page) page = 1;
+  var theUrl = assembleUrl(asset, parentId)+".json"
   return this.request({
-    "path": "/admin/redirects.json",
+    "path": theUrl,
     "qs": {
       "limit": 250,
       "page": page
     }
   }).then(function(response){
-    return response.redirects
-  });
-}
-
-Shopify.prototype.retrieveRedirectsCount = function(){
-  return this.request({
-    "path": "/admin/redirects/count.json"
-  }).then(function(response){
-    return response.count;
+    return response[_.last(asset.schema).lowercasePlural]
   })
 }
 
-Shopify.prototype.retrieveAllRedirects = function(){
-  return this.retrieveRedirectsCount().then(function(count){
-    var pages = Math.ceil(count / 250)
-    var range = _.range(1, pages+1)
-    return range
-  }).map(function(page){
-    return this.retrieveRedirects(page)
-  }.bind(this)).then(_).call("flatten")
-}
-
-Shopify.prototype.createRedirect = function(redirectContent) {
+Shopify.prototype.retrieveSingular = function(asset, parentId, childId) {
+  var theUrl = assembleUrl(asset, parentId, childId)+".json"
   return this.request({
-    "method": "POST",
-    "path": "/admin/redirects.json",
-    "body": {
-      "redirect": redirectContent
+    "path": theUrl
+  }).then(function(response){
+    //metafields returns plural if it's the child
+    if(asset.child.lowercasePlural == "metafields"){
+      return response[_.last(asset.schema).lowercasePlural]
     }
-  });
+    return response[_.last(asset.schema).lowercaseSingular]
+  })
 }
 
-Shopify.prototype.updateRedirect = function(redirectId, redirectContent) {
-  redirectContent.id = redirectId
+Shopify.prototype.retrieveCount = function(asset, parentId){
+  var theUrl = assembleUrl(asset, parentId)+"/count.json"
   return this.request({
-    "method": "PUT",
-    "path": "/admin/redirects/"+ redirectId +".json",
-    "body": {
-      "redirect": redirectContent
-    }
-  });
+    "path": theUrl
+  }).then(function(response){
+    return response.count
+  })
 }
 
-Shopify.prototype.ensureRedirects = function(redirects){
-  return this.retrieveAllRedirects().then(function(existingRedirects){
-    return Promise.map(redirects, function(redirect){
-      return Promise.resolve(existingRedirects).then(_).call("findWhere", {
-        "path": redirect.path,
-      }).then(function(match){
-        if(match && match.url == redirect.url) return match
-        if(match) return this.updateRedirect(match.id, redirect)
-        return this.createRedirect(redirect)
-      }.bind(this))
+Shopify.prototype.retrieveAll = function(asset, parentId){
+  return this.retrieveCount(asset, parentId)
+    .then(retrieveAllRange)
+    .map(function(page){
+      return this.retrievePlural(asset, page, parentId)
+    }.bind(this)).then(_).call("flatten")
+}
+
+Shopify.prototype.retrieveSingularWithMetafields = function(asset, parentId, childId) {
+  return this.retrieveSingular(asset, parentId, childId)
+    .then(function(item){
+      var parentMetafieldAsset = instantiateAsset([asset.alias, endpoints.metafield])
+      return this.retrieveSingular(parentMetafieldAsset, item.id)
+        .then(function(metafields){
+          item.metafields = metafields
+          return item
+        })
     }.bind(this))
+}
+
+Shopify.prototype.retrieveAllWithMetafields = function(asset, parentId){
+  return this.retrieveAll(asset, parentId)
+    .map(function(item){
+      var parentMetafieldAsset = instantiateAsset([asset.alias, endpoints.metafield])
+      return this.retrieveSingular(parentMetafieldAsset, item.id)
+        .then(function(metafields){
+          item.metafields = metafields
+          return item
+        })
+    }.bind(this))
+}
+
+Shopify.prototype.find = function(asset, match, parentId) {
+  return this.retrieveAll(asset, parentId)
+    .then(_)
+    .call("findWhere", match)
+}
+
+Shopify.prototype.create = function(asset, content, parentId) {
+  var options = {
+    "method": "POST",
+    "path": assembleUrl(asset, parentId)+".json",
+    "body": {}
+  };
+  options.body[_.last(asset.schema).lowercaseSingular] = content
+  return this.request(options).then(function(response){
+    return response[_.last(asset.schema).lowercaseSingular]
+  })
+}
+
+Shopify.prototype.deleteSingular = function(asset, parentId, childId) {
+  childId = (typeof childId == "object" && childId.id) ? childId.id : false
+  if(!childId) throw new Error("can't delete without id")
+  var theUrl = assembleUrl(asset, parentId, childId)+".json"
+  return this.request({
+    "method": "DELETE",
+    "path": theUrl,
+  })
+}
+
+Shopify.prototype.deletePlural = function(asset, parentId, childIds) {
+  if(childIds.length > 0){
+    return Promise.each(childIds, function(childId) {
+      return this.deleteSingular(asset, parentId, childId);
+    }.bind(this));
+  }else{
+    return [];
+  }
+}
+
+Shopify.prototype.updateSingular = function(asset, content, parentId, childId) {
+  if(content.id) childId = content.id
+  if(content.blog_id) parentId = content.blog_id
+  var options = {
+    "method": "PUT",
+    "path": assembleUrl(asset, parentId, childId)+".json",
+    "body": {}
+  }
+  options.body[_.last(asset.schema).lowercaseSingular] = content
+  return this.request(options).then(function(response){
+    return response[_.last(asset.schema).lowercaseSingular]
+  })
+}
+
+Shopify.prototype.updatePlural = function(asset, parentId, contents) {
+  if(contents.length > 0){
+    return Promise.each(contents, function(content) {
+      return this.updateSingular(asset, content, parentId);
+    }.bind(this));
+  }else{
+    return [];
+  }
+}
+
+Shopify.prototype.updateSingularWithMetafields = function(asset, content, parentId, childId) {
+  if(content.id) childId = content.id
+  if(content.blog_id) parentId = content.blog_id
+  var aliasId = (childId) ? childId : parentId;
+  if(content.metafields){
+    var parentMetafieldAsset = instantiateAsset([asset.alias, endpoints.metafield])
+    //get existing metafields for this object
+    return this.retrieveSingular(parentMetafieldAsset, aliasId)
+      .then(function(metafields){
+        var existing = {}
+        existing.metafields = metafields
+        return existing
+      })
+      .then(function(existing){
+        var metafieldsToCreate = getMetafieldsToCreate(existing, content)
+        var metafieldsToUpdate = getMetafieldsToUpdate(existing, content)
+        var metafieldsToDelete = getMetafieldsToDelete(existing, content)
+        content.metafields = metafieldsToCreate
+        return Promise.props({
+          // make the request to update with only non-exiting metafields
+          "update": this.updateSingular(asset, content, parentId, childId),
+          "updateMetafields": this.updatePlural(parentMetafieldAsset, aliasId, metafieldsToUpdate),
+          "deleteMetafields": this.deletePlural(parentMetafieldAsset, aliasId, metafieldsToDelete),
+        }).then(function(results){
+          var update = {}
+          update = results.update
+          update.results = {
+            "updateMetafields": updateMetafields,
+            "deleteMetafields": deleteMetafields
+          }
+          return update
+        })
+      }.bind(this))
+  }else{
+    return this.updateSingular(asset, content, parentId, childId)
+  }
+}
+
+function dynamicMatch(match, content){
+  var temp = {}
+  _.each(match, function(critera){
+    if(content[critera]) temp[critera] = content[critera]
+  })
+  return temp;
+}
+
+Shopify.prototype.allPossibleExistingObjects = function(asset, contents, parentId){
+  if(_.isArray(contents)){
+    var parentIds = _.chain(contents).map(function(content){
+      if(content.blog_id) return content.blog_id
+      return false
+    }).without(false).uniq().value()
+  }else if(contents && contents.blog_id){
+    var parentIds = [contents.blog_id]
+  }else{
+    var parentIds = []
+  }
+  if(parentId){
+    parentIds.push(parentId)
+    parentIds = _.uniq(parentIds)
+  }
+  if(parentIds.length !== 0){
+    return Promise.map(parentIds, function(parentId){
+      return this.retrieveAll(asset, parentId)
+    }.bind(this)).then(_).call("flatten")
+  }else{
+    return this.retrieveAll(asset)
+  }
+}
+
+Shopify.prototype.ensurePluralAndSingular = function(asset, match, contents, parentId){
+  return this.allPossibleExistingObjects(asset, contents, parentId).then(function(items){
+    if(items.length == 0) throw new Error("no parentIds")
+    if(!contents && match){
+      var found = _.findWhere(items, match)
+      return found
+    }
+    if(contents && !_.isArray(contents)) contents = [contents]
+    return Promise.map(contents, function(content){
+      if(content.id) childId = content.id
+      if(content.blog_id) parentId = content.blog_id
+      if(_.isArray(match)){
+        var thisMatch = dynamicMatch(match, content)
+      }else{
+        var thisMatch = match
+      }
+      var found = _.findWhere(items, thisMatch)
+      var childId = function(){
+        if(parentId && parentId == content.id) return undefined
+        if(parentId && parentId == content.id) return content.id
+        if(found && parentId == found.id) return undefined
+        if(found && parentId !== found.id) return found.id
+      }()
+      if(!items || !childId || !found) return this.create(asset, content, parentId)
+      return this.updateSingularWithMetafields(asset, content, parentId, childId)
+    }.bind(this)).then(function(results){
+      if(contents && !_.isArray(contents)) return results[0]
+      return results
+    })
   }.bind(this))
 }
 
-/* -----PRODUCTS----- */
+/* -----BUILDER----- */
 
-Shopify.prototype.retrieveProducts = function(page){
-  if(!page) page = 1;
-  return this.request({
-    "path": "/admin/products.json",
-    "qs": {
-      "limit": 250,
-      "page": page
-    }
-  }).then(function(response){
-    return response.products
-  });
+var endpoints = {
+  "blog": {
+    "uppercasePlural": "Blogs",
+    "uppercaseSingular": "Blog",
+    "lowercasePlural": "blogs",
+    "lowercaseSingular": "blog"
+  },
+  "redirect": {
+    "uppercasePlural": "Redirects",
+    "uppercaseSingular": "Redirect",
+    "lowercasePlural": "redirects",
+    "lowercaseSingular": "redirect"
+  },
+  "article": {
+    "uppercasePlural": "Articles",
+    "uppercaseSingular": "Article",
+    "lowercasePlural": "articles",
+    "lowercaseSingular": "article"
+  },
+  "metafield": {
+    "uppercasePlural": "Metafields",
+    "uppercaseSingular": "Metafield",
+    "lowercasePlural": "metafields",
+    "lowercaseSingular": "metafield"
+  }
 }
 
-Shopify.prototype.retrieveProductsCount = function(){
-  return this.request({
-    "path": "/admin/products/count.json"
-  }).then(function(response){
-    return response.count;
-  })
-}
+var assets = [
+  [endpoints.blog],
+  [endpoints.redirect],
+  [endpoints.blog, endpoints.article],
+  [endpoints.article, endpoints.metafield],
+  [endpoints.blog, endpoints.metafield],
+]
 
-Shopify.prototype.retrieveAllProducts = function(){
-  return this.retrieveProductsCount().then(function(count){
-    var pages = Math.ceil(count / 250)
-    var range = _.range(1, pages+1)
-    return range
-  }).map(function(page){
-    return this.retrieveProducts(page)
-  }.bind(this)).then(_).call("flatten")
-}
+_.each(assets, function(schema){
+  var asset = instantiateAsset(schema)
+  var plural = asset.alias.uppercasePlural
+  var singular = asset.alias.uppercaseSingular
 
+  var funcName = "retrieve"+plural
+  Shopify.prototype[funcName] = function(page, parentId){
+    return this.retrievePlural(asset, page, parentId)
+  }
 
-/* -----PAGES----- */
+  var funcName = "retrieve"+singular
+  Shopify.prototype[funcName] = function(parentId, childId){
+    return this.retrieveSingular(asset, parentId, childId)
+  }
 
-Shopify.prototype.retrievePages = function(page){
-  if(!page) page = 1;
-  return this.request({
-    "path": "/admin/pages.json",
-    "qs": {
-      "limit": 250,
-      "page": page
-    }
-  }).then(function(response){
-    return response.pages
-  });
-}
+  var funcName = "retrieve"+plural+"Count"
+  Shopify.prototype[funcName] = function(parentId){
+    return this.retrieveCount(asset, parentId)
+  }
 
-Shopify.prototype.retrievePagesCount = function(){
-  return this.request({
-    "path": "/admin/pages/count.json"
-  }).then(function(response){
-    return response.count;
-  })
-}
+  var funcName = "retrieveAll"+plural
+  Shopify.prototype[funcName] = function(parentId){
+    return this.retrieveAll(asset, parentId)
+  }
 
-Shopify.prototype.retrieveAllPages = function(){
-  return this.retrievePagesCount().then(function(count){
-    var pages = Math.ceil(count / 250)
-    var range = _.range(1, pages+1)
-    return range
-  }).map(function(page){
-    return this.retrievePages(page)
-  }.bind(this)).then(_).call("flatten")
-}
+  var funcName = "retrieve"+singular+"WithMetafields"
+  Shopify.prototype[funcName] = function(parentId, childId){
+    return this.retrieveSingularWithMetafields(asset, parentId, childId)
+  }
+
+  var funcName = "retrieveAll"+plural+"WithMetafields"
+  Shopify.prototype[funcName] = function(parentId){
+    return this.retrieveAllWithMetafields(asset, parentId)
+  }
+
+  var funcName = "find"+singular
+  Shopify.prototype[funcName] = function(match, parentId){
+    return this.find(asset, match, parentId)
+  }
+
+  var funcName = "create"+singular
+  Shopify.prototype[funcName] = function(content, parentId){
+    return this.create(asset, content, parentId)
+  }
+
+  var funcName = "delete"+singular
+  Shopify.prototype[funcName] = function(parentId, childId){
+    return this.deleteSingular(asset, parentId, childId)
+  }
+
+  var funcName = "delete"+plural
+  Shopify.prototype[funcName] = function(parentId, childIds){
+    return this.deletePlural(asset, parentId, childIds)
+  }
+
+  var funcName = "update"+singular
+  Shopify.prototype[funcName] = function(content, parentId, childId){
+    return this.updateSingular(asset, content, parentId, childId)
+  }
+
+  var funcName = "update"+plural
+  Shopify.prototype[funcName] = function(parentId, contents){
+    return this.updatePlural(asset, parentId, contents)
+  }
+
+  var funcName = "update"+singular+"WithMetafields"
+  Shopify.prototype[funcName] = function(content, parentId, childId){
+    return this.updateSingularWithMetafields(asset, content, parentId, childId)
+  }
+
+  var funcName = "ensure"+singular
+  Shopify.prototype[funcName] = function(match, content, parentId){
+    return this.ensurePluralAndSingular(asset, match, content, parentId)
+  }
+
+  var funcName = "ensure"+plural
+  Shopify.prototype[funcName] = function(match, content, parentId){
+    return this.ensurePluralAndSingular(asset, match, content, parentId)
+  }
+
+  /*
+  //ex. retreveBlogs()
+  //ex. retreveBlogMetafields()
+  var funcName = "retrieve"+asset.alias.uppercasePlural
+  Shopify.prototype[funcName] = function(page, parentId){
+    return this.retrievePlural(asset, page, parentId)
+  }
+  //ex. retreveBlog()
+  //ex. retreveBlogMetafield()
+  var funcName = "retrieve"+asset.alias.uppercaseSingular
+  Shopify.prototype[funcName] = function(parentId, childId){
+    return this.retrieveSingular(asset, parentId, childId)
+  }
+  //ex. retreveBlogsCount()
+  //ex. retrieveAllBlogMetafieldsCount()
+  var funcName = "retrieve"+asset.alias.uppercasePlural+"Count"
+  Shopify.prototype[funcName] = function(parentId){
+    return this.retrieveCount(asset, parentId)
+  }
+  //ex. retrieveAllBlogs()
+  //ex. retrieveAllBlogMetafields()
+  var funcName = "retrieveAll"+asset.alias.uppercasePlural
+  Shopify.prototype[funcName] = function(parentId){
+    return this.retrieveAll(asset, parentId)
+  }
+  //ex. retrieveAllBlogsWithMetafields()
+  var funcName = "retrieveAll"+asset.alias.uppercasePlural+"WithMetafields"
+  Shopify.prototype[funcName] = function(parentId){
+    return this.retrieveAllWithMetafields(asset, parentId)
+  }
+  //ex. retrieveBlogWithMetafields()
+  var funcName = "retrieve"+asset.alias.uppercaseSingular+"WithMetafields"
+  Shopify.prototype[funcName] = function(parentId, childId){
+    return this.retrieveSingularWithMetafields(asset, parentId, childId)
+  }
+  //ex. findBlog()
+  //ex. findBlogMetafield()
+  var funcName = "find"+asset.alias.uppercaseSingular
+  Shopify.prototype[funcName] = function(match, parentId) {
+    return this.find(asset, match, parentId)
+  }
+  //ex. createBlog()
+  //ex. createBlogMetafield()
+  var funcName = "create"+asset.alias.uppercaseSingular
+  Shopify.prototype[funcName] = function(content, parentId) {
+    return this.create(asset, content, parentId)
+  }
+  //ex. updateBlog()
+  //ex. updateBlogMetafield()
+  var funcName = "update"+asset.alias.uppercaseSingular
+  Shopify.prototype[funcName] = function(content, parentId) {
+    return this.updateSingular(asset, content, parentId)
+    //return Promise.resolve(false)
+  }
+  //ex. updateBlogs()
+  //ex. updateBlogMetafields()
+  var funcName = "update"+asset.alias.uppercasePlural
+  Shopify.prototype[funcName] = function(content, parentId, childId) {
+    return this.updatePlural(asset, content, parentId, childId)
+  }
+  //ex. updateBlogWithMetafields()
+  var funcName = "update"+asset.alias.uppercaseSingular+"WithMetafields"
+  Shopify.prototype[funcName] = function(content, parentId, childId) {
+    return this.updateSingularWithMetafields(asset, content, parentId, childId)
+  }
+  //ex. deleteBlog()
+  //ex. deleteBlogMetafield()
+  var funcName = "delete"+asset.alias.uppercaseSingular
+  Shopify.prototype[funcName] = function(content, parentId, childId) {
+    return this.deleteSingular(asset, content, parentId, childId)
+  }
+  //ex. deleteBlogs()
+  //ex. deleteBlogMetafields()
+  var funcName = "delete"+asset.alias.uppercasePlural
+  Shopify.prototype[funcName] = function(content, parentId, childIds) {
+    return this.deletePlural(asset, content, parentId, childIds)
+  }
+  //ex. ensureBlog()
+  //ex. ensureBlogMetafield()
+  var funcName = "ensure"+asset.alias.uppercaseSingular
+  Shopify.prototype[funcName] = function(content, parentId, childId) {
+    return this.ensure(asset, content, parentId, childId)
+  }
+  */
+})
