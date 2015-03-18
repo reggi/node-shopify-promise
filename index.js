@@ -290,8 +290,8 @@ Shopify.prototype.updateSingularWithMetafields = function(asset, content, parent
           var update = {}
           update = results.update
           update.results = {
-            "updateMetafields": updateMetafields,
-            "deleteMetafields": deleteMetafields
+            "updateMetafields": results.updateMetafields,
+            "deleteMetafields": results.deleteMetafields
           }
           return update
         })
@@ -335,20 +335,16 @@ Shopify.prototype.allPossibleExistingObjects = function(asset, contents, parentI
 
 Shopify.prototype.ensurePluralAndSingular = function(asset, match, contents, parentId){
   return this.allPossibleExistingObjects(asset, contents, parentId).then(function(items){
-    if(items.length == 0) throw new Error("no parentIds")
     if(!contents && match){
       var found = _.findWhere(items, match)
-      return found
+      if(found) return found
+      return this.create(asset, match, parentId)
     }
     if(contents && !_.isArray(contents)) contents = [contents]
     return Promise.map(contents, function(content){
       if(content.id) childId = content.id
       if(content.blog_id) parentId = content.blog_id
-      if(_.isArray(match)){
-        var thisMatch = dynamicMatch(match, content)
-      }else{
-        var thisMatch = match
-      }
+      var thisMatch = (_.isArray(match)) ? dynamicMatch(match, content) : match
       var found = _.findWhere(items, thisMatch)
       var childId = function(){
         if(parentId && parentId == content.id) return undefined
@@ -482,88 +478,4 @@ _.each(assets, function(schema){
     return this.ensurePluralAndSingular(asset, match, content, parentId)
   }
 
-  /*
-  //ex. retreveBlogs()
-  //ex. retreveBlogMetafields()
-  var funcName = "retrieve"+asset.alias.uppercasePlural
-  Shopify.prototype[funcName] = function(page, parentId){
-    return this.retrievePlural(asset, page, parentId)
-  }
-  //ex. retreveBlog()
-  //ex. retreveBlogMetafield()
-  var funcName = "retrieve"+asset.alias.uppercaseSingular
-  Shopify.prototype[funcName] = function(parentId, childId){
-    return this.retrieveSingular(asset, parentId, childId)
-  }
-  //ex. retreveBlogsCount()
-  //ex. retrieveAllBlogMetafieldsCount()
-  var funcName = "retrieve"+asset.alias.uppercasePlural+"Count"
-  Shopify.prototype[funcName] = function(parentId){
-    return this.retrieveCount(asset, parentId)
-  }
-  //ex. retrieveAllBlogs()
-  //ex. retrieveAllBlogMetafields()
-  var funcName = "retrieveAll"+asset.alias.uppercasePlural
-  Shopify.prototype[funcName] = function(parentId){
-    return this.retrieveAll(asset, parentId)
-  }
-  //ex. retrieveAllBlogsWithMetafields()
-  var funcName = "retrieveAll"+asset.alias.uppercasePlural+"WithMetafields"
-  Shopify.prototype[funcName] = function(parentId){
-    return this.retrieveAllWithMetafields(asset, parentId)
-  }
-  //ex. retrieveBlogWithMetafields()
-  var funcName = "retrieve"+asset.alias.uppercaseSingular+"WithMetafields"
-  Shopify.prototype[funcName] = function(parentId, childId){
-    return this.retrieveSingularWithMetafields(asset, parentId, childId)
-  }
-  //ex. findBlog()
-  //ex. findBlogMetafield()
-  var funcName = "find"+asset.alias.uppercaseSingular
-  Shopify.prototype[funcName] = function(match, parentId) {
-    return this.find(asset, match, parentId)
-  }
-  //ex. createBlog()
-  //ex. createBlogMetafield()
-  var funcName = "create"+asset.alias.uppercaseSingular
-  Shopify.prototype[funcName] = function(content, parentId) {
-    return this.create(asset, content, parentId)
-  }
-  //ex. updateBlog()
-  //ex. updateBlogMetafield()
-  var funcName = "update"+asset.alias.uppercaseSingular
-  Shopify.prototype[funcName] = function(content, parentId) {
-    return this.updateSingular(asset, content, parentId)
-    //return Promise.resolve(false)
-  }
-  //ex. updateBlogs()
-  //ex. updateBlogMetafields()
-  var funcName = "update"+asset.alias.uppercasePlural
-  Shopify.prototype[funcName] = function(content, parentId, childId) {
-    return this.updatePlural(asset, content, parentId, childId)
-  }
-  //ex. updateBlogWithMetafields()
-  var funcName = "update"+asset.alias.uppercaseSingular+"WithMetafields"
-  Shopify.prototype[funcName] = function(content, parentId, childId) {
-    return this.updateSingularWithMetafields(asset, content, parentId, childId)
-  }
-  //ex. deleteBlog()
-  //ex. deleteBlogMetafield()
-  var funcName = "delete"+asset.alias.uppercaseSingular
-  Shopify.prototype[funcName] = function(content, parentId, childId) {
-    return this.deleteSingular(asset, content, parentId, childId)
-  }
-  //ex. deleteBlogs()
-  //ex. deleteBlogMetafields()
-  var funcName = "delete"+asset.alias.uppercasePlural
-  Shopify.prototype[funcName] = function(content, parentId, childIds) {
-    return this.deletePlural(asset, content, parentId, childIds)
-  }
-  //ex. ensureBlog()
-  //ex. ensureBlogMetafield()
-  var funcName = "ensure"+asset.alias.uppercaseSingular
-  Shopify.prototype[funcName] = function(content, parentId, childId) {
-    return this.ensure(asset, content, parentId, childId)
-  }
-  */
 })
